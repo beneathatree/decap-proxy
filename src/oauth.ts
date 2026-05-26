@@ -20,7 +20,15 @@ export class OAuthClient {
 		const { tokenHost, authorizePath } = clientConfig.target;
 		const { redirect_uri, scope, state } = options;
 
-		return `${tokenHost}${authorizePath}?response_type=code&client_id=${clientConfig.id}&redirect_uri=${redirect_uri}&scope=${scope}&state=${state}`;
+		const params = new URLSearchParams({
+			response_type: 'code',
+			client_id: clientConfig.id,
+			redirect_uri,
+			scope,
+			state,
+		});
+
+		return `${tokenHost}${authorizePath}?${params.toString()}`;
 	}
 
 	async getToken(options: { code: string; redirect_uri: string }) {

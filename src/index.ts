@@ -4,6 +4,7 @@ interface Env {
 	GITHUB_OAUTH_ID: string;
 	GITHUB_OAUTH_SECRET: string;
   GITHUB_REPO_PRIVATE?: string;
+  DECAP_CMS_ORIGIN?: string;
 }
 
 function randomHex(bytes: number): string {
@@ -26,7 +27,20 @@ const createOAuth = (env: Env) => {
 	});
 };
 
-const handleAuth = async (url: URL, env: Env) => {
+const getCmsOrigin = (request: Request) => {
+	const referer = request.headers.get('Referer');
+	if (!referer) {
+		return undefined;
+	}
+
+	try {
+		return new URL(referer).origin;
+	} catch {
+		return undefined;
+	}
+};
+
+const handleAuth = async (request: Request, url: URL, env: Env) => {
 	const provider = url.searchParams.get('provider');
 	if (provider !== 'github') {
 		return new Response('Invalid provider', { status: 400 });
@@ -36,8 +50,15 @@ const handleAuth = async (url: URL, env: Env) => {
   const repoScope = repoIsPrivate ? 'repo,user' : 'public_repo,user';
 
 	const oauth2 = createOAuth(env);
+	const redirectUri = new URL(`https://${url.hostname}/callback`);
+	redirectUri.searchParams.set('provider', 'github');
+	const cmsOrigin = getCmsOrigin(request) ?? env.DECAP_CMS_ORIGIN;
+	if (cmsOrigin) {
+		redirectUri.searchParams.set('origin', cmsOrigin);
+	}
+
 	const authorizationUri = oauth2.authorizeURL({
-		redirect_uri: `https://${url.hostname}/callback?provider=github`,
+		redirect_uri: redirectUri.toString(),
 		scope: repoScope,
 		state: randomHex(4), // 4 bytes -> 8 hex chars
 	});
@@ -45,21 +66,39 @@ const handleAuth = async (url: URL, env: Env) => {
 	return new Response(null, { headers: { location: authorizationUri }, status: 301 });
 };
 
-const callbackScriptResponse = (status: string, token: string) => {
+const callbackScriptResponse = (status: string, token: string, targetOrigin: string) => {
 	return new Response(
 		`
 <html>
 <head>
   <script>
-    const receiveMessage = (message) => {
+    const targetOrigin = ${JSON.stringify(targetOrigin)};
+
+    const sendAuthorization = () => {
       window.opener.postMessage(
         'authorization:github:${status}:${JSON.stringify({ token })}',
-        '*'
+        targetOrigin
       );
+    };
+
+    const receiveMessage = (message) => {
+      sendAuthorization();
       window.removeEventListener("message", receiveMessage, false);
     }
+
     window.addEventListener("message", receiveMessage, false);
-    window.opener.postMessage("authorizing:github", "*");
+    window.opener.postMessage("authorizing:github", targetOrigin);
+    sendAuthorization();
+
+    // Decap may miss the first popup message while the admin window regains focus.
+    let attempts = 0;
+    const interval = window.setInterval(() => {
+      sendAuthorization();
+      attempts += 1;
+      if (attempts >= 10) {
+        window.clearInterval(interval);
+      }
+    }, 500);
   </script>
   <body>
     <p>Authorizing Decap...</p>
@@ -82,12 +121,17 @@ const handleCallback = async (url: URL, env: Env) => {
 		return new Response('Missing code', { status: 400 });
 	}
 
+	const cmsOrigin = url.searchParams.get('origin') ?? env.DECAP_CMS_ORIGIN;
+	if (!cmsOrigin) {
+		return new Response('Missing CMS origin', { status: 400 });
+	}
+
 	const oauth2 = createOAuth(env);
 	const accessToken = await oauth2.getToken({
 		code,
-		redirect_uri: `https://${url.hostname}/callback?provider=github`,
+		redirect_uri: `https://${url.hostname}/callback?provider=github&origin=${encodeURIComponent(cmsOrigin)}`,
 	});
-	return callbackScriptResponse('success', accessToken);
+	return callbackScriptResponse('success', accessToken, cmsOrigin);
 };
 
 export default {
@@ -95,7 +139,7 @@ export default {
 		const url = new URL(request.url);
     console.log(`url.pathname is ${url.pathname}`);
 		if (url.pathname === '/auth') {
-			return handleAuth(url, env);
+			return handleAuth(request, url, env);
 		}
 		if (url.pathname === '/callback') {
 			return handleCallback(url, env);
