@@ -1,6 +1,7 @@
-name = "beneathatreeblog-cms-auth"
+name = "decap-proxy"
 main = "src/index.ts"
 compatibility_date = "2025-11-17"
 
 [vars]
 GITHUB_REPO_PRIVATE = "1"
+DECAP_CMS_ORIGIN = "https://beneathatreeblog.pages.dev"
